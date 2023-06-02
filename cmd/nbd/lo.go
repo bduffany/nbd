@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 // Copyright 2018 Axel Wagner
@@ -19,13 +20,14 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 
-	"github.com/Merovius/nbd"
+	"github.com/bduffany/nbd"
+	"github.com/bduffany/nbd/nbdnl"
 	"github.com/google/subcommands"
 	"golang.org/x/sys/unix"
 )
@@ -34,7 +36,9 @@ func init() {
 	commands = append(commands, &loCmd{})
 }
 
-type loCmd struct{}
+type loCmd struct {
+	index uint
+}
 
 func (cmd *loCmd) Name() string {
 	return "lo"
@@ -59,30 +63,48 @@ filesystem to check whether invariants of the application survived the "crash".
 `
 }
 
-func (cmd *loCmd) SetFlags(fs *flag.FlagSet) {}
+func (cmd *loCmd) SetFlags(fs *flag.FlagSet) {
+	fs.UintVar(&cmd.index, "index", uint(nbdnl.IndexAny), "NBD device index")
+}
 
 func (cmd *loCmd) Execute(ctx context.Context, fs *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
-	if fs.NArg() != 1 {
-		log.Print(cmd.Usage())
-		return subcommands.ExitUsageError
+	// if fs.NArg() != 1 {
+	// 	log.Print(cmd.Usage())
+	// 	return subcommands.ExitUsageError
+	// }
+
+	var wg sync.WaitGroup
+	for i := 0; i < fs.NArg(); i++ {
+		i := i
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			execute(ctx, fs.Arg(i), uint32(i)+uint32(cmd.index))
+		}()
 	}
 
-	f, err := os.OpenFile(fs.Arg(0), os.O_RDWR, 0)
+	wg.Wait()
+	return subcommands.ExitSuccess
+}
+
+func execute(ctx context.Context, path string, index uint32) subcommands.ExitStatus {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
-		log.Println(err)
+		log.Printf("open %s: %s", path, err)
 		return subcommands.ExitFailure
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil {
-		log.Println(err)
+		log.Printf("stat %s: %s", f.Name(), err)
 		return subcommands.ExitFailure
 	}
-	log.Println(fi.Size())
+	log.Printf("setting up loopback for %s (%d bytes)", path, fi.Size())
 
 	d := &crashable{Device: f}
-	ch := make(chan os.Signal)
+	ch := make(chan os.Signal, 16)
 	signal.Notify(ch, unix.SIGUSR1)
 	go func() {
 		for range ch {
@@ -90,16 +112,33 @@ func (cmd *loCmd) Execute(ctx context.Context, fs *flag.FlagSet, _ ...interface{
 		}
 	}()
 
-	idx, wait, err := nbd.Loopback(ctx, d, uint64(fi.Size()))
+	dev, err := nbd.Loopback(ctx, d, uint64(fi.Size()), index)
 	if err != nil {
-		log.Println(err)
+		log.Printf("Failed to set up nbd: %s", err)
 		return subcommands.ExitFailure
 	}
-	fmt.Printf("Connected to /dev/nbd%d\n", idx)
-	if err := wait(); err != nil {
-		log.Println(err)
+
+	disconnected := make(chan struct{})
+	interrupt := make(chan os.Signal, 16)
+	signal.Notify(interrupt, os.Interrupt)
+	go func() {
+		for range interrupt {
+			log.Printf("Disconnecting /dev/nbd%d", dev.Index)
+			if err := nbdnl.Disconnect(dev.Index); err != nil {
+				log.Printf("Error while disconnecting /dev/nbd%d: %s", dev.Index, err)
+			} else {
+				log.Printf("Disconnected /dev/nbd%d", dev.Index)
+			}
+			close(disconnected)
+		}
+	}()
+
+	log.Printf("Connected to /dev/nbd%d", dev.Index)
+	if err := dev.Wait(); err != nil {
+		log.Printf("dev.Wait(): %s", err)
 		return subcommands.ExitFailure
 	}
+	<-disconnected
 	return subcommands.ExitSuccess
 }
 

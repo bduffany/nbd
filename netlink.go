@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 // Copyright 2018 Axel Wagner
@@ -18,12 +19,19 @@ package nbd
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 
-	"github.com/Merovius/nbd/nbdnl"
+	"github.com/bduffany/nbd/nbdnl"
 	"golang.org/x/sys/unix"
 )
+
+type NetlinkDevice struct {
+	Index      uint32
+	Wait       func() error
+	ClientSock *os.File
+}
 
 // Configure passes the given set of sockets to the kernel to provide them as
 // an NBD device. socks must be connected to the same server (which must
@@ -33,12 +41,12 @@ import (
 // once you're done with it.
 //
 // This is a Linux-only API.
-func Configure(e Export, socks ...*os.File) (uint32, error) {
+func Configure(e Export, idx uint32, socks ...*os.File) (uint32, error) {
 	var opts []nbdnl.ConnectOption
 	if e.BlockSizes != nil {
 		opts = append(opts, nbdnl.WithBlockSize(uint64(e.BlockSizes.Preferred)))
 	}
-	return nbdnl.Connect(nbdnl.IndexAny, socks, e.Size, 0, nbdnl.ServerFlags(e.Flags), opts...)
+	return nbdnl.Connect(idx, socks, e.Size, 0, nbdnl.ServerFlags(e.Flags), opts...)
 }
 
 // Loopback serves d on a private socket, passing the other end to the kernel
@@ -47,10 +55,10 @@ func Configure(e Export, socks ...*os.File) (uint32, error) {
 // blocks until ctx is cancelled or an error occurs (so it behaves like Serve).
 //
 // This is a Linux-only API.
-func Loopback(ctx context.Context, d Device, size uint64) (idx uint32, wait func() error, err error) {
+func Loopback(ctx context.Context, d Device, size uint64, idx uint32) (*NetlinkDevice, error) {
 	sp, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
 	if err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	exp := Export{
 		Size:       size,
@@ -64,7 +72,7 @@ func Loopback(ctx context.Context, d Device, size uint64) (idx uint32, wait func
 	server.Close()
 	if err != nil {
 		client.Close()
-		return 0, nil, err
+		return nil, err
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -82,12 +90,16 @@ func Loopback(ctx context.Context, d Device, size uint64) (idx uint32, wait func
 		ch <- err
 		serverc.Close()
 	}()
-	wait = func() error { return <-ch }
+	wait := func() error { return <-ch }
 
-	idx, err = Configure(exp, client)
+	idx, err = Configure(exp, idx, client)
 	if err != nil {
 		cancel()
-		return 0, nil, err
+		return nil, fmt.Errorf("configure failed: %s", err)
 	}
-	return idx, wait, nil
+	return &NetlinkDevice{
+		Index:      idx,
+		Wait:       wait,
+		ClientSock: client,
+	}, nil
 }

@@ -1,3 +1,4 @@
+//go:build linux || darwin
 // +build linux darwin
 
 // Copyright 2018 Axel Wagner
@@ -19,7 +20,7 @@ package main
 import (
 	"os"
 
-	"github.com/Merovius/nbd"
+	"github.com/bduffany/nbd"
 	"golang.org/x/sys/unix"
 )
 

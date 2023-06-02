@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 // Copyright 2018 Axel Wagner
@@ -21,7 +22,7 @@ import (
 	"flag"
 	"log"
 
-	"github.com/Merovius/nbd/nbdnl"
+	"github.com/bduffany/nbd/nbdnl"
 	"github.com/google/subcommands"
 )
 

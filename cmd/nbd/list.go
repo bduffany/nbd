@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 // Copyright 2018 Axel Wagner
@@ -25,7 +26,7 @@ import (
 	"sort"
 	"text/tabwriter"
 
-	"github.com/Merovius/nbd/nbdnl"
+	"github.com/bduffany/nbd/nbdnl"
 	"github.com/google/subcommands"
 )
 

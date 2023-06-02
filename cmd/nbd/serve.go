@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 // Copyright 2018 Axel Wagner
@@ -23,7 +24,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Merovius/nbd"
+	"github.com/bduffany/nbd"
 	"github.com/google/subcommands"
 )
 

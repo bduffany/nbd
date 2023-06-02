@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 // Copyright 2018 Axel Wagner
@@ -40,6 +41,11 @@ import (
 
 	"github.com/mdlayher/genetlink"
 	"github.com/mdlayher/netlink"
+)
+
+var (
+	ErrMismatchedSequence = errors.New("mismatched sequence in netlink reply")
+	ErrMismatchedPID      = errors.New("mismatched PID in netlink reply")
 )
 
 const (
@@ -88,7 +94,7 @@ func dial() error {
 
 	var err error
 	if conn.c == nil {
-		conn.c, err = genetlink.Dial(nil)
+		conn.c, err = genetlink.Dial(&netlink.Config{Strict: true})
 		if err != nil {
 			return err
 		}
@@ -104,6 +110,58 @@ func dial() error {
 		}
 		conn.family = fam.ID
 	}
+	return nil
+}
+
+// execute is similar to genetlink.Conn.Execute() except that it works around
+// an NBD driver issue in which multiple replies from the kernel may have the
+// same sequence number.
+// See https://github.com/Merovius/nbd/issues/18 for more details.
+func execute(msg genetlink.Message) ([]genetlink.Message, error) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+
+	req, err := conn.c.Send(msg, conn.family, netlink.Request|netlink.Acknowledge)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		resg, res, err := conn.c.Receive()
+		if err != nil {
+			return nil, err
+		}
+		err = validate(req, res)
+		if err == ErrMismatchedSequence {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return resg, nil
+	}
+}
+
+// validate validates one or more reply Messages against a request Message,
+// ensuring that they contain matching sequence numbers and PIDs.
+func validate(request netlink.Message, replies []netlink.Message) error {
+	for _, m := range replies {
+		// Check for mismatched sequence, unless:
+		//   - request had no sequence, meaning we are probably validating
+		//     a multicast reply
+		if m.Header.Sequence != request.Header.Sequence && request.Header.Sequence != 0 {
+			return ErrMismatchedSequence
+		}
+
+		// Check for mismatched PID, unless:
+		//   - request had no PID, meaning we are either:
+		//     - validating a multicast reply
+		//     - netlink has not yet assigned us a PID
+		//   - response had no PID, meaning it's from the kernel as a multicast reply
+		if m.Header.PID != request.Header.PID && request.Header.PID != 0 && m.Header.PID != 0 {
+			return ErrMismatchedPID
+		}
+	}
+
 	return nil
 }
 
@@ -201,7 +259,7 @@ func Connect(idx uint32, socks []*os.File, size uint64, cf ClientFlags, sf Serve
 		},
 		Data: body,
 	}
-	msgs, err := conn.c.Execute(msg, conn.family, netlink.Request|netlink.Acknowledge)
+	msgs, err := execute(msg)
 	if err != nil {
 		return 0, err
 	}
@@ -230,13 +288,14 @@ func Connect(idx uint32, socks []*os.File, size uint64, cf ClientFlags, sf Serve
 // Reconfigure reconfigures the given device. The arguments are equivalent to
 // Configure, except that IndexAny is invalid for Reconfigure and WithBlockSize
 // is ignored.
-func Reconfigure(idx uint32, socks []*os.File, cf ClientFlags, sf ServerFlags, opts ...ConnectOption) error {
+func Reconfigure(idx uint32, socks []*os.File, size uint64, cf ClientFlags, sf ServerFlags, opts ...ConnectOption) error {
 	if err := dial(); err != nil {
 		return err
 	}
 
 	e := netlink.NewAttributeEncoder()
 	e.Uint32(attrIndex, idx)
+	e.Uint64(attrSizeBytes, size)
 	var sl []uint32
 	for _, s := range socks {
 		sl = append(sl, uint32(s.Fd()))
@@ -262,7 +321,7 @@ func Reconfigure(idx uint32, socks []*os.File, cf ClientFlags, sf ServerFlags, o
 		},
 		Data: body,
 	}
-	_, err = conn.c.Execute(msg, conn.family, netlink.Request|netlink.Acknowledge)
+	_, err = execute(msg)
 	return err
 }
 
@@ -285,7 +344,7 @@ func Disconnect(idx uint32) error {
 		},
 		Data: body,
 	}
-	_, err = conn.c.Execute(msg, conn.family, netlink.Request|netlink.Acknowledge)
+	_, err = execute(msg)
 	return err
 }
 
@@ -350,7 +409,7 @@ func status(idx uint32) ([]DeviceStatus, error) {
 		},
 		Data: body,
 	}
-	msgs, err := conn.c.Execute(msg, conn.family, netlink.Request|netlink.Acknowledge)
+	msgs, err := execute(msg)
 	if err != nil {
 		return nil, err
 	}

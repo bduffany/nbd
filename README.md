@@ -68,6 +68,7 @@ durability of software not written in Go. Refer to `nbd help lo` for details.
 
 ```
 Copyright 2018 Axel Wagner
+Copyright 2023 Brandon Duffany
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
