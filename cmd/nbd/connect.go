@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 // Copyright 2018 Axel Wagner
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	"github.com/Merovius/nbd"
+	"github.com/Merovius/nbd/nbdnl"
 	"github.com/google/subcommands"
 )
 
@@ -106,7 +108,7 @@ func (cmd *connectCmd) Execute(ctx context.Context, fs *flag.FlagSet, _ ...inter
 		log.Println(err)
 		return subcommands.ExitFailure
 	}
-	n, err := nbd.Configure(exp, sock)
+	n, err := nbd.Configure(exp, nbdnl.IndexAny, sock)
 	if err != nil {
 		log.Println(err)
 		return subcommands.ExitFailure
